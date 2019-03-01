@@ -16,6 +16,12 @@
 
 package org.springframework.cloud.alibaba.nacos;
 
+import com.alibaba.nacos.api.NacosFactory;
+import com.alibaba.nacos.api.naming.NamingService;
+import com.alibaba.nacos.client.naming.utils.UtilAndComs;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -24,7 +30,6 @@ import org.springframework.core.env.Environment;
 import org.springframework.util.StringUtils;
 
 import javax.annotation.PostConstruct;
-
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
@@ -33,14 +38,27 @@ import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Properties;
+
+import static com.alibaba.nacos.api.PropertyKeyConst.ACCESS_KEY;
+import static com.alibaba.nacos.api.PropertyKeyConst.CLUSTER_NAME;
+import static com.alibaba.nacos.api.PropertyKeyConst.ENDPOINT;
+import static com.alibaba.nacos.api.PropertyKeyConst.NAMESPACE;
+import static com.alibaba.nacos.api.PropertyKeyConst.NAMING_LOAD_CACHE_AT_START;
+import static com.alibaba.nacos.api.PropertyKeyConst.SECRET_KEY;
+import static com.alibaba.nacos.api.PropertyKeyConst.SERVER_ADDR;
 
 /**
  * @author dungu.zpf
  * @author xiaojing
+ * @author <a href="mailto:mercyblitz@gmail.com">Mercy</a>
  */
 
 @ConfigurationProperties("spring.cloud.nacos.discovery")
 public class NacosDiscoveryProperties {
+
+	private static final Logger log = LoggerFactory
+			.getLogger(NacosDiscoveryProperties.class);
 
 	/**
 	 * nacos discovery server address
@@ -57,6 +75,11 @@ public class NacosDiscoveryProperties {
 	 * namespace, separation registry of different environments.
 	 */
 	private String namespace;
+
+	/**
+	 * watch delay,duration to pull new service from nacos server.
+	 */
+	private long watchDelay = 5000;
 
 	/**
 	 * nacos naming log file name
@@ -78,6 +101,11 @@ public class NacosDiscoveryProperties {
 	 * cluster name for nacos server.
 	 */
 	private String clusterName = "DEFAULT";
+
+	/**
+	 * naming load from local cache at application start. true is load
+	 */
+	private String namingLoadCacheAtStart = "false";
 
 	/**
 	 * extra metadata to register.
@@ -125,10 +153,22 @@ public class NacosDiscoveryProperties {
 	@Autowired
 	private InetUtils inetUtils;
 
+	@Autowired
+	private Environment environment;
+
+	private NamingService namingService;
+
 	@PostConstruct
 	public void init() throws SocketException {
 
+		if (secure) {
+			metadata.put("secure", "true");
+		}
+
 		serverAddr = Objects.toString(serverAddr, "");
+		if (serverAddr.lastIndexOf("/") != -1) {
+			serverAddr = serverAddr.substring(0, serverAddr.length() - 1);
+		}
 		endpoint = Objects.toString(endpoint, "");
 		namespace = Objects.toString(namespace, "");
 		logName = Objects.toString(logName, "");
@@ -141,7 +181,7 @@ public class NacosDiscoveryProperties {
 			else {
 				NetworkInterface netInterface = NetworkInterface
 						.getByName(networkInterface);
-				if (null == networkInterface) {
+				if (null == netInterface) {
 					throw new IllegalArgumentException(
 							"no such interface " + networkInterface);
 				}
@@ -163,6 +203,8 @@ public class NacosDiscoveryProperties {
 
 			}
 		}
+
+		this.overrideFromEnv(environment);
 	}
 
 	public String getEndpoint() {
@@ -289,16 +331,34 @@ public class NacosDiscoveryProperties {
 		this.secretKey = secretKey;
 	}
 
+	public String getNamingLoadCacheAtStart() {
+		return namingLoadCacheAtStart;
+	}
+
+	public void setNamingLoadCacheAtStart(String namingLoadCacheAtStart) {
+		this.namingLoadCacheAtStart = namingLoadCacheAtStart;
+	}
+
+	public long getWatchDelay() {
+		return watchDelay;
+	}
+
+	public void setWatchDelay(long watchDelay) {
+		this.watchDelay = watchDelay;
+	}
+
 	@Override
 	public String toString() {
 		return "NacosDiscoveryProperties{" + "serverAddr='" + serverAddr + '\''
 				+ ", endpoint='" + endpoint + '\'' + ", namespace='" + namespace + '\''
-				+ ", logName='" + logName + '\'' + ", service='" + service + '\''
-				+ ", weight=" + weight + ", clusterName='" + clusterName + '\''
-				+ ", metadata=" + metadata + ", registerEnabled=" + registerEnabled
-				+ ", ip='" + ip + '\'' + ", networkInterface='" + networkInterface + '\''
-				+ ", port=" + port + ", secure=" + secure + ", accessKey='" + accessKey
-				+ '\'' + ", secretKey='" + secretKey + '\'' + '}';
+				+ ", watchDelay=" + watchDelay + ", logName='" + logName + '\''
+				+ ", service='" + service + '\'' + ", weight=" + weight
+				+ ", clusterName='" + clusterName + '\'' + ", namingLoadCacheAtStart='"
+				+ namingLoadCacheAtStart + '\'' + ", metadata=" + metadata
+				+ ", registerEnabled=" + registerEnabled + ", ip='" + ip + '\''
+				+ ", networkInterface='" + networkInterface + '\'' + ", port=" + port
+				+ ", secure=" + secure + ", accessKey='" + accessKey + '\''
+				+ ", secretKey='" + secretKey + '\'' + '}';
 	}
 
 	public void overrideFromEnv(Environment env) {
@@ -325,12 +385,38 @@ public class NacosDiscoveryProperties {
 		}
 		if (StringUtils.isEmpty(this.getClusterName())) {
 			this.setClusterName(env.resolvePlaceholders(
-					"${spring.cloud.nacos.discovery.clusterName-name:}"));
+					"${spring.cloud.nacos.discovery.cluster-name:}"));
 		}
 		if (StringUtils.isEmpty(this.getEndpoint())) {
 			this.setEndpoint(
 					env.resolvePlaceholders("${spring.cloud.nacos.discovery.endpoint:}"));
 		}
+	}
+
+	public NamingService namingServiceInstance() {
+
+		if (null != namingService) {
+			return namingService;
+		}
+
+		Properties properties = new Properties();
+		properties.put(SERVER_ADDR, serverAddr);
+		properties.put(NAMESPACE, namespace);
+		properties.put(UtilAndComs.NACOS_NAMING_LOG_NAME, logName);
+		properties.put(ENDPOINT, endpoint);
+		properties.put(ACCESS_KEY, accessKey);
+		properties.put(SECRET_KEY, secretKey);
+		properties.put(CLUSTER_NAME, clusterName);
+		properties.put(NAMING_LOAD_CACHE_AT_START, namingLoadCacheAtStart);
+
+		try {
+			namingService = NacosFactory.createNamingService(properties);
+		}
+		catch (Exception e) {
+			log.error("create naming service error!properties={},e=,", this, e);
+			return null;
+		}
+		return namingService;
 	}
 
 }

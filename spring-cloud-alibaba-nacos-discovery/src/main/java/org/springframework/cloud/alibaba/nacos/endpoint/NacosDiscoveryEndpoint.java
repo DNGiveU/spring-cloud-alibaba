@@ -26,11 +26,9 @@ import com.alibaba.nacos.api.naming.pojo.ServiceInfo;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation;
 import org.springframework.cloud.alibaba.nacos.NacosDiscoveryProperties;
-import org.springframework.cloud.alibaba.nacos.registry.NacosRegistration;
 
 /**
  * Endpoint for nacos discovery, get nacos properties and subscribed services
@@ -39,14 +37,14 @@ import org.springframework.cloud.alibaba.nacos.registry.NacosRegistration;
 @Endpoint(id = "nacos-discovery")
 public class NacosDiscoveryEndpoint {
 
-	private static final Logger LOGGER = LoggerFactory
+	private static final Logger log = LoggerFactory
 			.getLogger(NacosDiscoveryEndpoint.class);
 
-	@Autowired
 	private NacosDiscoveryProperties nacosDiscoveryProperties;
 
-	@Autowired
-	private NacosRegistration nacosRegistration;
+	public NacosDiscoveryEndpoint(NacosDiscoveryProperties nacosDiscoveryProperties) {
+		this.nacosDiscoveryProperties = nacosDiscoveryProperties;
+	}
 
 	/**
 	 * @return nacos discovery endpoint
@@ -56,14 +54,14 @@ public class NacosDiscoveryEndpoint {
 		Map<String, Object> result = new HashMap<>();
 		result.put("NacosDiscoveryProperties", nacosDiscoveryProperties);
 
-		NamingService namingService = nacosRegistration.getNacosNamingService();
+		NamingService namingService = nacosDiscoveryProperties.namingServiceInstance();
 		List<ServiceInfo> subscribe = Collections.emptyList();
 
 		try {
 			subscribe = namingService.getSubscribeServices();
 		}
 		catch (Exception e) {
-			LOGGER.error("get subscribe services from nacos fail,", e);
+			log.error("get subscribe services from nacos fail,", e);
 		}
 		result.put("subscribe", subscribe);
 		return result;
